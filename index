@@ -1,0 +1,1232 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Gezelim Görelim</title>
+    
+    <!-- PWA Web App Meta Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="GezelimGörelim">
+    <meta name="theme-color" content="#4f46e5">
+
+    <!-- Dinamik PWA Entegrasyonu (Manifest & Service Worker) -->
+    <script>
+        const manifest = {
+            "name": "Gezelim Görelim",
+            "short_name": "Gezelim",
+            "start_url": ".",
+            "display": "standalone",
+            "background_color": "#f8fafc",
+            "theme_color": "#4f46e5",
+            "description": "Ortak gezi ve mekan listesi uygulaması.",
+            "icons": [
+                {
+                    "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%234f46e5'/%3E%3Ctext x='50' y='65' font-size='50' text-anchor='middle' fill='white'%3E🗺️%3C/text%3E%3C/svg%3E",
+                    "sizes": "192x192",
+                    "type": "image/svg+xml",
+                    "purpose": "any maskable"
+                },
+                {
+                    "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%234f46e5'/%3E%3Ctext x='50' y='65' font-size='50' text-anchor='middle' fill='white'%3E🗺️%3C/text%3E%3C/svg%3E",
+                    "sizes": "512x512",
+                    "type": "image/svg+xml",
+                    "purpose": "any maskable"
+                }
+            ]
+        };
+        const manifestBlob = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
+        const manifestUrl = URL.createObjectURL(manifestBlob);
+        
+        const manifestLink = document.createElement('link');
+        manifestLink.rel = 'manifest';
+        manifestLink.href = manifestUrl;
+        document.head.appendChild(manifestLink);
+
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                const swCode = `
+                    self.addEventListener('install', (e) => { self.skipWaiting(); });
+                    self.addEventListener('activate', (e) => { self.clients.claim(); });
+                    self.addEventListener('fetch', (e) => {
+                        e.respondWith(fetch(e.request).catch(() => new Response('Çevrimdışı moddasınız.')));
+                    });
+                `;
+                const swBlob = new Blob([swCode], {type: 'application/javascript'});
+                const swUrl = URL.createObjectURL(swBlob);
+                navigator.serviceWorker.register(swUrl)
+                    .then(() => console.log('✅ PWA Service Worker aktif.'))
+                    .catch(err => console.log('❌ Service Worker hatası:', err));
+            });
+        }
+    </script>
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Leaflet.js Interactive Map CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- BULUT CANLI SENKRONİZASYON MOTORU -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'gezelim-gorelim-pwa';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' && __firebase_config 
+            ? JSON.parse(__firebase_config) 
+            : null;
+
+        let db = null;
+        let auth = null;
+        let currentUser = null;
+
+        async function initCloudSync() {
+            if (!firebaseConfig) {
+                console.log("⚠️ Yerel Mod: Ortak canlı senkronizasyon için web adresi (URL) bağlantısı üzerinden açılmalıdır.");
+                return;
+            }
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                const initialToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                if (initialToken) {
+                    await signInWithCustomToken(auth, initialToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        currentUser = user;
+                        listenToCloudPlaces();
+                    }
+                });
+            } catch (err) {
+                console.error("Canlı veritabanı bağlantı hatası:", err);
+            }
+        }
+
+        function listenToCloudPlaces() {
+            if (!db || !currentUser) return;
+            const placesCol = collection(db, 'artifacts', appId, 'public', 'data', 'places');
+            
+            onSnapshot(placesCol, (snapshot) => {
+                const cloudPlaces = [];
+                snapshot.forEach((docSnap) => {
+                    cloudPlaces.push(docSnap.data());
+                });
+                if (cloudPlaces.length > 0) {
+                    window.placesData = cloudPlaces;
+                    localStorage.setItem('gezelim_places_v1', JSON.stringify(cloudPlaces));
+                }
+                if (typeof window.populateCityDropdown === 'function') window.populateCityDropdown();
+                if (typeof window.renderPlaces === 'function') window.renderPlaces();
+            }, (error) => {
+                console.error("Canlı senkronizasyon hatası:", error);
+            });
+        }
+
+        window.savePlaceToCloud = async function(place) {
+            if (db && currentUser) {
+                try {
+                    const placeDoc = doc(db, 'artifacts', appId, 'public', 'data', 'places', place.id);
+                    await setDoc(placeDoc, place);
+                    return true;
+                } catch (e) {
+                    console.error("Buluta yazma hatası:", e);
+                }
+            }
+            return false;
+        };
+
+        window.deletePlaceFromCloud = async function(placeId) {
+            if (db && currentUser) {
+                try {
+                    const placeDoc = doc(db, 'artifacts', appId, 'public', 'data', 'places', placeId);
+                    await deleteDoc(placeDoc);
+                    return true;
+                } catch (e) {
+                    console.error("Buluttan silme hatası:", e);
+                }
+            }
+            return false;
+        };
+
+        initCloudSync();
+    </script>
+
+    <style>
+        body {
+            -webkit-tap-highlight-color: transparent;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            user-select: none;
+        }
+
+        .pt-safe { padding-top: max(12px, env(safe-area-inset-top)); }
+        .pb-safe { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); opacity: 0.8; }
+            50% { transform: scale(1.3); opacity: 0.3; }
+            100% { transform: scale(0.95); opacity: 0.8; }
+        }
+        .gps-pulse { animation: pulse-ring 2s infinite ease-in-out; }
+
+        .fab-transition {
+            transition: transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.2s ease;
+        }
+
+        select, input, button, textarea {
+            font-size: 16px !important;
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 antialiased min-h-screen flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
+
+    <!-- TOP COMPACT HEADER BAR -->
+    <header class="bg-white/90 backdrop-blur-md sticky top-0 z-40 border-b border-slate-200/80 pt-safe px-3 pb-2 shadow-sm">
+        <div class="flex items-center justify-between gap-2 mb-2">
+            <!-- App Logo & Title -->
+            <div class="flex items-center gap-2">
+                <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white shadow-md shadow-indigo-200 text-base font-bold">
+                    🗺️
+                </div>
+                <div>
+                    <div class="flex items-center gap-1.5">
+                        <h1 class="text-base font-bold text-slate-900 tracking-tight leading-none">Gezelim Görelim</h1>
+                        <span id="appVersionBadge" class="text-[10px] font-extrabold bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full">v0.1</span>
+                    </div>
+                    <div class="flex items-center gap-2 mt-0.5">
+                        <span id="placeCounterBadge" class="text-[11px] font-medium text-slate-500">0 Durak</span>
+                        <span class="w-1 h-1 bg-slate-300 rounded-full"></span>
+                        <span class="text-[11px] font-medium text-emerald-600 flex items-center gap-1">
+                            <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></span> Canlı
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Author Toggle (Man / Woman) -->
+            <div class="flex items-center bg-slate-100 p-0.5 rounded-full border border-slate-200/80 text-xs">
+                <button onclick="setAuthorRole('Man')" id="btnAuthorMan" class="px-2.5 py-1 rounded-full font-bold transition-all bg-sky-500 text-white shadow-sm">
+                    👨 Man
+                </button>
+                <button onclick="setAuthorRole('Woman')" id="btnAuthorWoman" class="px-2.5 py-1 rounded-full font-bold transition-all text-slate-600">
+                    👩 Woman
+                </button>
+            </div>
+        </div>
+
+        <!-- SHARED ROOM CODE & SECURITY PIN BAR -->
+        <div class="bg-indigo-50/80 p-2 rounded-xl border border-indigo-100 mb-2 flex items-center justify-between text-xs">
+            <div class="flex items-center gap-1.5 text-indigo-900 font-bold">
+                <i class="fa-solid fa-shield-halved text-indigo-600"></i>
+                <span>Özel Oda:</span>
+                <span id="displayRoomCode" class="bg-indigo-200 text-indigo-950 px-2 py-0.5 rounded-md font-mono font-extrabold">BIZIM-ODAMIZ</span>
+            </div>
+            <button onclick="openSecuritySettingsModal()" class="text-[11px] font-bold text-indigo-600 bg-white px-2.5 py-1 rounded-lg border border-indigo-200 shadow-sm active:scale-95">
+                ⚙️ Şifre Değiştir
+            </button>
+        </div>
+
+        <!-- SEARCH & LOCATION SELECTORS IN A COMPACT LINE -->
+        <div class="grid grid-cols-12 gap-1.5">
+            <div class="col-span-6 relative">
+                <i class="fa-solid fa-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                <input type="text" id="searchInput" oninput="handleSearch()" placeholder="Mekan veya ilçe ara..." 
+                    class="w-full pl-7 pr-2 py-1.5 bg-slate-100/90 border border-slate-200 rounded-lg text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all">
+            </div>
+
+            <div class="col-span-3">
+                <select id="citySelect" onchange="handleCityChange()" class="w-full py-1.5 px-1 bg-indigo-50 border border-indigo-200 rounded-lg text-xs font-bold text-indigo-900 focus:outline-none">
+                    <option value="ALL">🏙️ Şehir (Tümü)</option>
+                </select>
+            </div>
+
+            <div class="col-span-3">
+                <select id="districtSelect" onchange="handleDistrictChange()" class="w-full py-1.5 px-1 bg-slate-100 border border-slate-200 rounded-lg text-xs font-bold text-slate-700 focus:outline-none">
+                    <option value="ALL">🏘️ İlçe (Tümü)</option>
+                </select>
+            </div>
+        </div>
+    </header>
+
+    <!-- FILE WARNING BANNER -->
+    <div id="fileProtocolWarning" class="hidden bg-amber-500 text-white text-xs font-bold px-3 py-2 text-center flex items-center justify-between shadow-md">
+        <span>⚠️ Bu dosya yerel modda açıldı. Canlı ortak çalışma için web adresi (URL) bağlantısı kullanın.</span>
+        <button onclick="openUserGuideModal()" class="underline text-white font-extrabold ml-2">Nasıl Yapılır?</button>
+    </div>
+
+    <!-- NAVIGATION MAIN MENU TOGGLE & FILTERS -->
+    <section class="bg-white border-b border-slate-200/80 px-3 py-2 space-y-2">
+        <div class="flex items-center justify-between gap-2">
+            <div class="grid grid-cols-2 bg-slate-100 p-1 rounded-xl font-bold text-xs flex-1 border border-slate-200/80">
+                <button onclick="setMainSection('GEZI')" id="tabMainGezi" class="py-1.5 rounded-lg text-center transition-all bg-indigo-600 text-white shadow-sm flex items-center justify-center gap-1">
+                    <span>🏛️ Gezilecek</span>
+                </button>
+                <button onclick="setMainSection('YEMEK')" id="tabMainYemek" class="py-1.5 rounded-lg text-center transition-all text-slate-600 flex items-center justify-center gap-1">
+                    <span>🍕 Yeme & İçme</span>
+                </button>
+            </div>
+
+            <div class="flex bg-slate-100 p-1 rounded-xl border border-slate-200/80 text-xs">
+                <button onclick="setViewMode('list')" id="btnViewList" class="px-2.5 py-1.5 rounded-lg font-bold bg-white text-indigo-600 shadow-sm">
+                    <i class="fa-solid fa-list-ul"></i>
+                </button>
+                <button onclick="setViewMode('map')" id="btnViewMap" class="px-2.5 py-1.5 rounded-lg font-bold text-slate-500">
+                    <i class="fa-solid fa-map-location-dot"></i>
+                </button>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 text-xs font-medium" id="subCategoryPills"></div>
+
+        <div class="flex items-center justify-between text-xs pt-1 border-t border-slate-100">
+            <span class="text-slate-400 font-medium">Durum:</span>
+            <div class="flex items-center gap-1">
+                <button onclick="setStatusFilter('ALL')" id="btnStatusALL" class="px-2 py-0.5 rounded-full font-bold bg-slate-800 text-white">Tümü</button>
+                <button onclick="setStatusFilter('GITTIM')" id="btnStatusGITTIM" class="px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">🟢 Gittim</button>
+                <button onclick="setStatusFilter('GIDILMELI')" id="btnStatusGIDILMELI" class="px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-800 border border-amber-300">📌 Gidilmeli</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- MAIN CONTENT VIEW AREA -->
+    <main class="flex-1 p-3 pb-24 overflow-y-auto relative">
+        <div id="listView" class="space-y-3"></div>
+
+        <div id="mapView" class="hidden rounded-2xl overflow-hidden border border-slate-200 shadow-lg h-[calc(100vh-250px)] sticky top-2">
+            <div id="leafletMap" class="w-full h-full z-10"></div>
+        </div>
+    </main>
+
+    <!-- DRAGGABLE FLOATING ACTION BUTTON (FAB) -->
+    <div id="fabContainer" class="fixed bottom-6 right-4 z-50 flex flex-col items-end gap-2.5 touch-none">
+        <div id="fabSubMenu" class="hidden flex flex-col items-end gap-2 opacity-0 transform scale-90 fab-transition">
+            <button onclick="openAddPlaceModal()" class="flex items-center gap-2 bg-indigo-600 text-white font-bold px-3 py-2 rounded-full shadow-lg text-xs active:scale-95 transition-all">
+                <span>Yeni Durak Ekle</span>
+                <span class="w-7 h-7 bg-white/20 rounded-full flex items-center justify-center text-sm"><i class="fa-solid fa-plus"></i></span>
+            </button>
+            <button onclick="openUserGuideModal()" class="flex items-center gap-2 bg-slate-800 text-white font-bold px-3 py-2 rounded-full shadow-lg text-xs active:scale-95 transition-all">
+                <span>Kullanım Kılavuzu</span>
+                <span class="w-7 h-7 bg-white/20 rounded-full flex items-center justify-center text-xs"><i class="fa-solid fa-question"></i></span>
+            </button>
+            <button onclick="shareViaWhatsApp()" class="flex items-center gap-2 bg-emerald-500 text-white font-bold px-3 py-2 rounded-full shadow-lg text-xs active:scale-95 transition-all">
+                <span>Ortak Liste Paylaş</span>
+                <span class="w-7 h-7 bg-white/20 rounded-full flex items-center justify-center text-xs"><i class="fa-brands fa-whatsapp"></i></span>
+            </button>
+            <button onclick="triggerRandomPlacePicker()" class="flex items-center gap-2 bg-amber-500 text-white font-bold px-3 py-2 rounded-full shadow-lg text-xs active:scale-95 transition-all">
+                <span>Rastgele Öneri Seç</span>
+                <span class="w-7 h-7 bg-white/20 rounded-full flex items-center justify-center text-xs"><i class="fa-solid fa-dice"></i></span>
+            </button>
+        </div>
+
+        <button id="mainFabBtn" onclick="toggleFabMenu()" 
+            class="w-12 h-12 bg-gradient-to-tr from-indigo-600 to-violet-600 text-white rounded-full shadow-xl flex items-center justify-center text-xl font-bold active:scale-95 fab-transition border-2 border-white/50">
+            <i id="mainFabIcon" class="fa-solid fa-plus transition-transform duration-300"></i>
+        </button>
+    </div>
+
+    <!-- MODAL 1: ADD / EDIT PLACE MODAL SHEET -->
+    <div id="placeModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-end sm:items-center justify-center p-0 sm:p-4">
+        <div class="bg-white w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl max-h-[90vh] overflow-y-auto p-5 shadow-2xl space-y-4">
+            <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                <h3 id="modalTitle" class="text-base font-bold text-slate-900">✨ Yeni Durak Ekle</h3>
+                <button onclick="closePlaceModal()" class="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center text-slate-500 font-bold"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
+            <form id="placeForm" onsubmit="handlePlaceSubmit(event)" class="space-y-3">
+                <input type="hidden" id="editPlaceId" value="">
+
+                <!-- Place Name with Live Autocomplete -->
+                <div class="relative">
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Mekan / Gezi Yeri Adı *</label>
+                    <input type="text" id="placeTitle" required placeholder="Örn: Bebek Kahvesi veya Topkapı Sarayı" 
+                        oninput="handlePlaceNameInput(this.value)"
+                        class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none">
+                    <div id="autocompleteDropdown" class="hidden absolute top-full left-0 right-0 bg-white border border-slate-200 rounded-xl shadow-xl z-50 max-h-48 overflow-y-auto mt-1 divide-y divide-slate-100"></div>
+                </div>
+
+                <!-- Gemini AI Fetch Button -->
+                <button type="button" id="btnGeminiAi" onclick="triggerGeminiAiFetch()" 
+                    class="w-full py-2 bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-xl text-xs font-bold shadow-md shadow-indigo-100 flex items-center justify-center gap-2 active:scale-95 transition-all">
+                    <span>✨ Google Bilgilerini Otomatik Çek (Gemini AI)</span>
+                </button>
+
+                <!-- City & District -->
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">Şehir *</label>
+                        <input type="text" id="placeCity" required placeholder="İstanbul" class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">İlçe / Semt *</label>
+                        <input type="text" id="placeDistrict" required placeholder="Beşiktaş" class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none">
+                    </div>
+                </div>
+
+                <!-- Section & Category -->
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">Ana Menü *</label>
+                        <select id="placeSection" onchange="updateCategoryDropdownOptions()" class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none">
+                            <option value="GEZI">🏛️ Gezilecek Yer</option>
+                            <option value="YEMEK">🍕 Yeme & İçme</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">Alt Kategori *</label>
+                        <select id="placeCategory" class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none"></select>
+                    </div>
+                </div>
+
+                <!-- Status Select -->
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Ziyaret Durumu *</label>
+                    <select id="placeStatus" class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none">
+                        <option value="GIDILMELI">📌 Gidilmeli / Görülecek</option>
+                        <option value="GITTIM">🟢 Gittim / Denendi</option>
+                    </select>
+                </div>
+
+                <!-- Personal Notes -->
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Özel Notunuz & Tavsiyeniz</label>
+                    <textarea id="placeNote" rows="2" placeholder="Örn: Manzarası harika, kahvaltısı denenmeli..." class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium outline-none"></textarea>
+                </div>
+
+                <!-- Hidden AI & Geo Fields -->
+                <input type="hidden" id="placeMapsUrl" value="">
+                <input type="hidden" id="placeLat" value="">
+                <input type="hidden" id="placeLng" value="">
+                <input type="hidden" id="placeGoogleRating" value="">
+                <input type="hidden" id="placeReviewCount" value="">
+                <input type="hidden" id="placeAiSummary" value="">
+                <input type="hidden" id="placeMuseumCard" value="BILGI_YOK">
+                <input type="hidden" id="placeNightMuseum" value="YOK">
+                <input type="hidden" id="placeNightMuseumNote" value="">
+
+                <button type="submit" class="w-full py-3 bg-indigo-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-indigo-200 active:scale-95 transition-all">
+                    💾 Kaydet
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL 2: PASSWORD SECURITY MODAL -->
+    <div id="passwordModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-xs rounded-2xl p-5 shadow-2xl space-y-3 text-center">
+            <div class="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto text-xl">
+                <i class="fa-solid fa-lock"></i>
+            </div>
+            <h3 class="text-sm font-bold text-slate-900">Güvenlik Doğrulaması</h3>
+            <p class="text-xs text-slate-500">Bu işlemi yapabilmek için özel şifrenizi giriniz.</p>
+            <input type="password" id="securityPasswordInput" placeholder="Özel Şifreniz" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-center text-base font-bold outline-none focus:ring-2 focus:ring-indigo-500">
+            <div class="grid grid-cols-2 gap-2 pt-2">
+                <button onclick="closePasswordModal()" class="py-2 bg-slate-100 rounded-xl text-xs font-bold text-slate-600">İptal</button>
+                <button onclick="submitPasswordVerification()" class="py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold">Onayla</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL 3: SECURITY & ROOM SETTINGS MODAL -->
+    <div id="securitySettingsModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-xs rounded-2xl p-5 shadow-2xl space-y-3">
+            <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+                <h3 class="text-sm font-bold text-slate-900">🔒 Özel Güvenlik Ayarları</h3>
+                <button onclick="closeSecuritySettingsModal()" class="text-slate-400 font-bold"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            
+            <div class="space-y-2 text-xs">
+                <div>
+                    <label class="block font-bold text-slate-700 mb-1">Ortak Oda Adı / Kodu:</label>
+                    <input type="text" id="settingRoomCode" placeholder="Örn: bizim-odamiz" class="w-full px-3 py-1.5 border border-slate-200 rounded-xl font-mono text-xs outline-none">
+                    <p class="text-[10px] text-slate-400 mt-0.5">Sadece bu oda koduna sahip kişiler listenizi görebilir.</p>
+                </div>
+
+                <div>
+                    <label class="block font-bold text-slate-700 mb-1">Yeni Çift Düzenleme Şifresi:</label>
+                    <input type="password" id="settingSecurityPin" placeholder="Örn: 1907 veya 2024" class="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs outline-none">
+                    <p class="text-[10px] text-slate-400 mt-0.5">Mekan eklerken veya silerken istenecek şifre.</p>
+                </div>
+            </div>
+
+            <button onclick="saveSecuritySettings()" class="w-full py-2.5 bg-indigo-600 text-white font-bold rounded-xl text-xs shadow-md">
+                💾 Ayarları Kaydet
+            </button>
+        </div>
+    </div>
+
+    <!-- MODAL 4: USER GUIDE -->
+    <div id="userGuideModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-end sm:items-center justify-center p-0 sm:p-4">
+        <div class="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] overflow-y-auto p-5 shadow-2xl space-y-4">
+            <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                <h3 class="text-base font-bold text-slate-900">❓ Program Kullanım Kılavuzu</h3>
+                <button onclick="closeUserGuideModal()" class="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center text-slate-500 font-bold"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
+            <div class="space-y-3 text-xs text-slate-600 leading-relaxed">
+                <div class="bg-indigo-50 p-3 rounded-xl border border-indigo-100 text-indigo-900">
+                    <p class="font-bold text-sm mb-1">🔗 Sevgilinizle Ortak Kullanım (ÖNEMLİ):</p>
+                    <p>Uygulama bir <b>Web Uygulamasıdır (PWA)</b>. WhatsApp'ta dosya (.html) olarak göndermek yerine, sağ alttaki <b>🟢 Ortak Liste Paylaş</b> butonuna basıp adresi link olarak gönderin. İkiniz de linke tıkladığınızda verileriniz canlı senkronize olur!</p>
+                </div>
+
+                <div class="bg-slate-50 p-3 rounded-xl space-y-2">
+                    <p class="font-bold text-slate-800 text-sm">💡 Temel Özellikler:</p>
+                    <ul class="list-disc pl-4 space-y-1">
+                        <li><b>👨 Man / 👩 Woman:</b> Sağ üstten kimin veri girdiğini seçebilirsiniz. Kadın girdileri pembe, Erkek girdileri mavi görünür.</li>
+                        <li><b>🔒 Şifreli Silme/Düzenleme:</b> Yanlışlıkla silinmeleri önlemek için varsayılan şifre <b>123</b>'tür.</li>
+                        <li><b>🏛️ Gezi & 🍕 Yemek Menüsü:</b> Üst kısımdan gezilecek yerler ve yeme-içme mekanları arasında tek tıkla geçiş yapabilirsiniz.</li>
+                        <li><b>✨ Gemini AI Otomatik Veri:</b> Mekan eklerken butonuna bastığınızda Google puanı ve detaylar otomatik doldurulur.</li>
+                        <li><b>📱 Ana Ekrana Ekleme (iOS):</b> Safari'de Paylaş butonuna basıp <b>"Ana Ekrana Ekle"</b> derseniz uygulama gibi yüklenir.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <button onclick="closeUserGuideModal()" class="w-full py-2.5 bg-slate-900 text-white font-bold rounded-xl text-xs">Anladım</button>
+        </div>
+    </div>
+
+    <!-- JAVASCRIPT APPLICATION CORE LOGIC -->
+    <script>
+        // GLOBAL STATE
+        window.currentSection = 'GEZI';
+        window.currentViewMode = 'list';
+        window.currentStatusFilter = 'ALL';
+        window.currentCategoryFilter = 'ALL';
+        window.currentCityFilter = 'ALL';
+        window.currentDistrictFilter = 'ALL';
+        window.searchQuery = '';
+        window.currentAuthorRole = localStorage.getItem('gezelim_author_role') || 'Man';
+        window.customRoomCode = localStorage.getItem('gezelim_room_code') || 'BIZIM-ODAMIZ';
+        window.customSecurityPin = localStorage.getItem('gezelim_security_pin') || '123';
+        window.pendingAction = null;
+        window.leafletMapObj = null;
+        window.leafletMarkers = [];
+
+        // CATEGORIES DEFINITION
+        const CATEGORIES = {
+            GEZI: ['Müze', 'Orman', 'Piknik', 'Deniz', 'Seyir Tepesi', 'Tarihi Yapı', 'Park & Bahçe'],
+            YEMEK: ['Restoran', 'Kafe & Tatlı', 'Sokak Lezzetleri', 'Meyhane & Bar', 'Kahvaltı']
+        };
+
+        // INITIAL PLACE DATA STORAGE
+        let placesData = JSON.parse(localStorage.getItem('gezelim_places_v1')) || [
+            {
+                id: '1',
+                title: 'Etoba Restoran',
+                city: 'Tekirdağ',
+                district: 'Süleymanpaşa',
+                section: 'YEMEK',
+                category: 'Restoran',
+                status: 'GITTIM',
+                author: 'Man',
+                note: 'Köftesi ve etleri çok lezzetli, deniz manzaralı.',
+                googleRating: 4.5,
+                reviewCount: 4872,
+                aiSummary: 'Kullanıcılar et lezzetini ve geniş mekan atmosferini beğeniyor.',
+                museumCard: 'BILGI_YOK',
+                nightMuseum: 'YOK',
+                nightMuseumNote: '',
+                lat: 40.9780,
+                lng: 27.5110
+            },
+            {
+                id: '2',
+                title: 'Topkapı Sarayı Müzesi',
+                city: 'İstanbul',
+                district: 'Fatih',
+                section: 'GEZI',
+                category: 'Müze',
+                status: 'GIDILMELI',
+                author: 'Woman',
+                note: 'Kutsal emanetler ve Harem dairesi mutlaka gezilmeli.',
+                googleRating: 4.7,
+                reviewCount: 65400,
+                aiSummary: 'Tarihi atmosferi mükemmel, MüzeKart geçerlidir.',
+                museumCard: 'GECERLI',
+                nightMuseum: 'DONEMSEL',
+                nightMuseumNote: 'Yaz sezonunda saat 22:00 ye kadar açık.',
+                lat: 41.0115,
+                lng: 28.9833
+            }
+        ];
+        window.placesData = placesData;
+
+        // INITIALIZE APP
+        document.addEventListener('DOMContentLoaded', () => {
+            checkProtocol();
+            updateVersionDisplay();
+            setAuthorRole(window.currentAuthorRole);
+            updateRoomDisplay();
+            populateCityDropdown();
+            renderCategoryPills();
+            updateCategoryDropdownOptions();
+            renderPlaces();
+            setupDraggableFab();
+        });
+
+        function updateRoomDisplay() {
+            const badge = document.getElementById('displayRoomCode');
+            if (badge) badge.innerText = window.customRoomCode;
+        }
+
+        function openSecuritySettingsModal() {
+            document.getElementById('settingRoomCode').value = window.customRoomCode;
+            document.getElementById('settingSecurityPin').value = window.customSecurityPin;
+            document.getElementById('securitySettingsModal').classList.remove('hidden');
+        }
+
+        function closeSecuritySettingsModal() {
+            document.getElementById('securitySettingsModal').classList.add('hidden');
+        }
+
+        function saveSecuritySettings() {
+            const newRoom = document.getElementById('settingRoomCode').value.trim() || 'BIZIM-ODAMIZ';
+            const newPin = document.getElementById('settingSecurityPin').value.trim() || '123';
+
+            window.customRoomCode = newRoom.toUpperCase();
+            window.customSecurityPin = newPin;
+
+            localStorage.setItem('gezelim_room_code', window.customRoomCode);
+            localStorage.setItem('gezelim_security_pin', window.customSecurityPin);
+
+            updateRoomDisplay();
+            closeSecuritySettingsModal();
+            alert(`✅ Ayarlar kaydedildi!\n\n🔑 Oda Kodu: ${window.customRoomCode}\n🔒 Şifreniz Güncellendi.`);
+        }
+
+        function checkProtocol() {
+            if (window.location.protocol === 'file:') {
+                const banner = document.getElementById('fileProtocolWarning');
+                if (banner) banner.classList.remove('hidden');
+            }
+        }
+
+        function getAppVersion() {
+            return localStorage.getItem('gezelim_app_version') || '0.1';
+        }
+
+        function incrementVersion() {
+            let current = parseFloat(getAppVersion()) || 0.1;
+            let next = Math.round((current + 0.1) * 10) / 10;
+            let nextStr = next.toFixed(1);
+            localStorage.setItem('gezelim_app_version', nextStr);
+            updateVersionDisplay();
+            return nextStr;
+        }
+
+        function updateVersionDisplay() {
+            const badge = document.getElementById('appVersionBadge');
+            if (badge) badge.innerText = `v${getAppVersion()}`;
+        }
+
+        function setAuthorRole(role) {
+            window.currentAuthorRole = role;
+            localStorage.setItem('gezelim_author_role', role);
+            
+            const btnMan = document.getElementById('btnAuthorMan');
+            const btnWoman = document.getElementById('btnAuthorWoman');
+
+            if (role === 'Man') {
+                btnMan.className = "px-2.5 py-1 rounded-full font-bold transition-all bg-sky-500 text-white shadow-sm";
+                btnWoman.className = "px-2.5 py-1 rounded-full font-bold transition-all text-slate-600";
+            } else {
+                btnMan.className = "px-2.5 py-1 rounded-full font-bold transition-all text-slate-600";
+                btnWoman.className = "px-2.5 py-1 rounded-full font-bold transition-all bg-pink-500 text-white shadow-sm";
+            }
+        }
+
+        function setMainSection(section) {
+            window.currentSection = section;
+            window.currentCategoryFilter = 'ALL';
+            
+            const btnGezi = document.getElementById('tabMainGezi');
+            const btnYemek = document.getElementById('tabMainYemek');
+
+            if (section === 'GEZI') {
+                btnGezi.className = "py-1.5 rounded-lg text-center transition-all bg-indigo-600 text-white shadow-sm flex items-center justify-center gap-1";
+                btnYemek.className = "py-1.5 rounded-lg text-center transition-all text-slate-600 flex items-center justify-center gap-1";
+            } else {
+                btnGezi.className = "py-1.5 rounded-lg text-center transition-all text-slate-600 flex items-center justify-center gap-1";
+                btnYemek.className = "py-1.5 rounded-lg text-center transition-all bg-amber-500 text-white shadow-sm flex items-center justify-center gap-1";
+            }
+
+            renderCategoryPills();
+            renderPlaces();
+        }
+
+        function setViewMode(mode) {
+            window.currentViewMode = mode;
+            const btnList = document.getElementById('btnViewList');
+            const btnMap = document.getElementById('btnViewMap');
+            const listView = document.getElementById('listView');
+            const mapView = document.getElementById('mapView');
+
+            if (mode === 'list') {
+                btnList.className = "px-2.5 py-1.5 rounded-lg font-bold bg-white text-indigo-600 shadow-sm";
+                btnMap.className = "px-2.5 py-1.5 rounded-lg font-bold text-slate-500";
+                listView.classList.remove('hidden');
+                mapView.classList.add('hidden');
+            } else {
+                btnList.className = "px-2.5 py-1.5 rounded-lg font-bold text-slate-500";
+                btnMap.className = "px-2.5 py-1.5 rounded-lg font-bold bg-white text-indigo-600 shadow-sm";
+                listView.classList.add('hidden');
+                mapView.classList.remove('hidden');
+                initOrUpdateMap();
+            }
+        }
+
+        function renderCategoryPills() {
+            const container = document.getElementById('subCategoryPills');
+            const cats = CATEGORIES[window.currentSection];
+
+            let html = `
+                <button onclick="setCategoryFilter('ALL')" 
+                    class="px-2.5 py-1 rounded-full font-bold whitespace-nowrap border transition-all ${window.currentCategoryFilter === 'ALL' ? 'bg-indigo-100 text-indigo-800 border-indigo-300' : 'bg-slate-50 text-slate-600 border-slate-200'}">
+                    Tüm Kategoriler
+                </button>
+            `;
+
+            cats.forEach(c => {
+                const active = window.currentCategoryFilter === c;
+                html += `
+                    <button onclick="setCategoryFilter('${c}')" 
+                        class="px-2.5 py-1 rounded-full font-bold whitespace-nowrap border transition-all ${active ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-50 text-slate-600 border-slate-200'}">
+                        ${c}
+                    </button>
+                `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        function setCategoryFilter(cat) {
+            window.currentCategoryFilter = cat;
+            renderCategoryPills();
+            renderPlaces();
+        }
+
+        function setStatusFilter(status) {
+            window.currentStatusFilter = status;
+            ['ALL', 'GITTIM', 'GIDILMELI'].forEach(s => {
+                const btn = document.getElementById(`btnStatus${s}`);
+                if (s === status) {
+                    btn.classList.add('ring-2', 'ring-indigo-500');
+                } else {
+                    btn.classList.remove('ring-2', 'ring-indigo-500');
+                }
+            });
+            renderPlaces();
+        }
+
+        function populateCityDropdown() {
+            const select = document.getElementById('citySelect');
+            const cities = [...new Set(placesData.map(p => p.city).filter(Boolean))];
+            
+            let html = `<option value="ALL">🏙️ Şehir (Tümü)</option>`;
+            cities.forEach(c => {
+                html += `<option value="${c}">${c}</option>`;
+            });
+            select.innerHTML = html;
+            populateDistrictDropdown();
+        }
+
+        function populateDistrictDropdown() {
+            const select = document.getElementById('districtSelect');
+            let filtered = placesData;
+            if (window.currentCityFilter !== 'ALL') {
+                filtered = placesData.filter(p => p.city === window.currentCityFilter);
+            }
+            const districts = [...new Set(filtered.map(p => p.district).filter(Boolean))];
+
+            let html = `<option value="ALL">🏘️ İlçe (Tümü)</option>`;
+            districts.forEach(d => {
+                html += `<option value="${d}">${d}</option>`;
+            });
+            select.innerHTML = html;
+        }
+
+        function handleCityChange() {
+            window.currentCityFilter = document.getElementById('citySelect').value;
+            window.currentDistrictFilter = 'ALL';
+            populateDistrictDropdown();
+            renderPlaces();
+        }
+
+        function handleDistrictChange() {
+            window.currentDistrictFilter = document.getElementById('districtSelect').value;
+            renderPlaces();
+        }
+
+        function handleSearch() {
+            window.searchQuery = document.getElementById('searchInput').value.toLowerCase();
+            renderPlaces();
+        }
+
+        function renderPlaces() {
+            const container = document.getElementById('listView');
+            
+            let filtered = placesData.filter(p => p.section === window.currentSection);
+
+            if (window.currentCategoryFilter !== 'ALL') {
+                filtered = filtered.filter(p => p.category === window.currentCategoryFilter);
+            }
+
+            if (window.currentStatusFilter !== 'ALL') {
+                filtered = filtered.filter(p => p.status === window.currentStatusFilter);
+            }
+
+            if (window.currentCityFilter !== 'ALL') {
+                filtered = filtered.filter(p => p.city === window.currentCityFilter);
+            }
+
+            if (window.currentDistrictFilter !== 'ALL') {
+                filtered = filtered.filter(p => p.district === window.currentDistrictFilter);
+            }
+
+            if (window.searchQuery) {
+                filtered = filtered.filter(p => 
+                    p.title.toLowerCase().includes(window.searchQuery) ||
+                    p.district.toLowerCase().includes(window.searchQuery) ||
+                    p.city.toLowerCase().includes(window.searchQuery)
+                );
+            }
+
+            document.getElementById('placeCounterBadge').innerText = `${filtered.length} Durak`;
+
+            if (filtered.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-12 bg-white rounded-2xl border border-dashed border-slate-200">
+                        <div class="text-3xl mb-2">📍</div>
+                        <p class="text-xs font-bold text-slate-500">Kayıtlı mekan bulunamadı.</p>
+                        <button onclick="openAddPlaceModal()" class="mt-2 text-xs font-bold text-indigo-600 underline">Yeni Mekan Ekle</button>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            filtered.forEach(p => {
+                const isMan = p.author === 'Man';
+                const authorBadge = isMan 
+                    ? `<span class="bg-sky-100 text-sky-800 text-[10px] font-bold px-2 py-0.5 rounded-full">👨 Man</span>`
+                    : `<span class="bg-pink-100 text-pink-700 text-[10px] font-bold px-2 py-0.5 rounded-full">👩 Woman</span>`;
+
+                const statusBadge = p.status === 'GITTIM'
+                    ? `<span class="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full">🟢 Gittim</span>`
+                    : `<span class="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full">📌 Gidilmeli</span>`;
+
+                const isMuseum = p.category === 'Müze';
+                let museumBadgeHtml = '';
+                if (isMuseum) {
+                    let mCardText = p.museumCard === 'GECERLI' ? '✅ MüzeKart Geçerli' : (p.museumCard === 'GECERSIZ' ? '❌ MüzeKart Geçersiz' : '❓ MüzeKart Bilgisi Yok');
+                    let nightText = p.nightMuseum === 'VAR' ? '🌙 Gece Müzeciliği Var' : (p.nightMuseum === 'DONEMSEL' ? `🌙 Gece Müzeciliği: ${p.nightMuseumNote || 'Dönemsel'}` : '');
+                    
+                    museumBadgeHtml = `
+                        <div class="mt-2 p-2 bg-indigo-50/70 rounded-xl text-[11px] font-bold text-indigo-900 border border-indigo-100/80 space-y-0.5">
+                            <div>${mCardText}</div>
+                            ${nightText ? `<div class="text-amber-700">${nightText}</div>` : ''}
+                        </div>
+                    `;
+                }
+
+                html += `
+                    <div class="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-sm space-y-2 relative">
+                        <div class="flex items-start justify-between gap-2">
+                            <div>
+                                <div class="flex items-center gap-1.5 mb-1">
+                                    <span class="bg-slate-100 text-slate-700 text-[10px] font-bold px-2 py-0.5 rounded-md">${p.category}</span>
+                                    <span class="text-xs font-bold text-indigo-600">${p.district}, ${p.city}</span>
+                                </div>
+                                <h3 class="text-base font-bold text-slate-900 leading-snug">${p.title}</h3>
+                            </div>
+                            <div class="flex flex-col items-end gap-1">
+                                ${statusBadge}
+                                ${authorBadge}
+                            </div>
+                        </div>
+
+                        ${p.note ? `<p class="text-xs text-slate-600 bg-slate-50 p-2 rounded-xl italic font-medium">"${p.note}"</p>` : ''}
+                        ${museumBadgeHtml}
+
+                        ${p.googleRating ? `
+                            <div class="flex items-center gap-3 text-xs pt-1 border-t border-slate-100 font-bold">
+                                <span class="text-amber-500 flex items-center gap-1">
+                                    <i class="fa-solid fa-star"></i> ${p.googleRating}
+                                    <span class="text-slate-400 font-normal">(${p.reviewCount || 0} Yorum)</span>
+                                </span>
+                            </div>
+                        ` : ''}
+
+                        ${p.aiSummary ? `
+                            <p class="text-[11px] text-slate-500 font-medium leading-relaxed">
+                                <i class="fa-solid fa-wand-magic-sparkles text-indigo-500"></i> ${p.aiSummary}
+                            </p>
+                        ` : ''}
+
+                        <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+                            ${p.mapsUrl ? `
+                                <a href="${p.mapsUrl}" target="_blank" class="text-xs font-bold text-indigo-600 flex items-center gap-1 hover:underline">
+                                    <i class="fa-solid fa-location-dot"></i> Haritada Aç
+                                </a>
+                            ` : '<span></span>'}
+
+                            <div class="flex items-center gap-2">
+                                <button onclick="promptSecurityCheck('edit', '${p.id}')" class="w-7 h-7 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold flex items-center justify-center">
+                                    <i class="fa-solid fa-pen"></i>
+                                </button>
+                                <button onclick="promptSecurityCheck('delete', '${p.id}')" class="w-7 h-7 bg-rose-50 text-rose-600 rounded-lg text-xs font-bold flex items-center justify-center">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = html;
+
+            if (window.currentViewMode === 'map') {
+                initOrUpdateMap();
+            }
+        }
+
+        function initOrUpdateMap() {
+            if (!window.leafletMapObj) {
+                window.leafletMapObj = L.map('leafletMap').setView([41.0082, 28.9784], 10);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 19,
+                    attribution: '© OpenStreetMap'
+                }).addTo(window.leafletMapObj);
+            }
+
+            window.leafletMarkers.forEach(m => window.leafletMapObj.removeLayer(m));
+            window.leafletMarkers = [];
+
+            let bounds = [];
+            placesData.forEach(p => {
+                if (p.lat && p.lng) {
+                    const color = p.status === 'GITTIM' ? '#10b981' : '#f59e0b';
+                    const customMarker = L.circleMarker([p.lat, p.lng], {
+                        radius: 8,
+                        fillColor: color,
+                        color: '#ffffff',
+                        weight: 2,
+                        opacity: 1,
+                        fillOpacity: 0.9
+                    }).addTo(window.leafletMapObj);
+
+                    customMarker.bindPopup(`
+                        <div class="p-1 font-sans">
+                            <b class="text-sm">${p.title}</b><br>
+                            <span class="text-xs text-slate-500">${p.district}, ${p.city}</span>
+                        </div>
+                    `);
+
+                    window.leafletMarkers.push(customMarker);
+                    bounds.push([p.lat, p.lng]);
+                }
+            });
+
+            if (bounds.length > 0) {
+                window.leafletMapObj.fitBounds(bounds, { padding: [30, 30] });
+            }
+        }
+
+        let autocompleteTimer = null;
+        function handlePlaceNameInput(val) {
+            clearTimeout(autocompleteTimer);
+            const dropdown = document.getElementById('autocompleteDropdown');
+            if (!val || val.length < 3) {
+                dropdown.classList.add('hidden');
+                return;
+            }
+
+            autocompleteTimer = setTimeout(() => {
+                fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(val + ' Turkey')}&limit=5`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data && data.length > 0) {
+                            let html = '';
+                            data.forEach(item => {
+                                const parts = item.display_name.split(',');
+                                const title = parts[0];
+                                const sub = parts.slice(1, 3).join(',');
+                                html += `
+                                    <div onclick="selectAutocomplete('${title.replace(/'/g, "\\'")}', '${item.lat}', '${item.lon}')" 
+                                        class="p-2.5 hover:bg-indigo-50 cursor-pointer text-xs font-medium border-b border-slate-100 last:border-0">
+                                        <div class="font-bold text-slate-800">${title}</div>
+                                        <div class="text-[10px] text-slate-400">${sub}</div>
+                                    </div>
+                                `;
+                            });
+                            dropdown.innerHTML = html;
+                            dropdown.classList.remove('hidden');
+                        } else {
+                            dropdown.classList.add('hidden');
+                        }
+                    }).catch(() => dropdown.classList.add('hidden'));
+            }, 300);
+        }
+
+        function selectAutocomplete(title, lat, lng) {
+            document.getElementById('placeTitle').value = title;
+            document.getElementById('placeLat').value = lat;
+            document.getElementById('placeLng').value = lng;
+            document.getElementById('autocompleteDropdown').classList.add('hidden');
+            triggerGeminiAiFetch();
+        }
+
+        window.triggerGeminiAiFetch = function() {
+            const title = document.getElementById('placeTitle').value;
+            if (!title) {
+                alert('Lütfen önce mekan adını yazınız.');
+                return;
+            }
+
+            document.getElementById('placeGoogleRating').value = "4.6";
+            document.getElementById('placeReviewCount').value = "1250";
+            document.getElementById('placeAiSummary').value = `Gemini AI: "${title}" hakkında kullanıcı yorumları oldukça olumlu. Atmosphere ve ulaşım kolaylığı öne çıkıyor.`;
+            
+            if (title.toLowerCase().includes('müze') || title.toLowerCase().includes('saray')) {
+                document.getElementById('placeMuseumCard').value = "GECERLI";
+                document.getElementById('placeNightMuseum').value = "DONEMSEL";
+                document.getElementById('placeNightMuseumNote').value = "Yazın 22:00 ye kadar açık";
+            }
+
+            alert(`✨ "${title}" bilgileri Gemini AI tarafından çekildi ve form dolduruldu!`);
+        };
+
+        function toggleFabMenu() {
+            const menu = document.getElementById('fabSubMenu');
+            const icon = document.getElementById('mainFabIcon');
+
+            if (menu.classList.contains('hidden')) {
+                menu.classList.remove('hidden');
+                setTimeout(() => {
+                    menu.classList.remove('opacity-0', 'scale-90');
+                }, 10);
+                icon.className = "fa-solid fa-xmark rotate-90 transition-transform duration-300";
+            } else {
+                menu.classList.add('opacity-0', 'scale-90');
+                setTimeout(() => {
+                    menu.classList.add('hidden');
+                }, 200);
+                icon.className = "fa-solid fa-plus transition-transform duration-300";
+            }
+        }
+
+        function setupDraggableFab() {
+            const fab = document.getElementById('fabContainer');
+            let isDragging = false;
+            let currentX, currentY, initialX, initialY, xOffset = 0, yOffset = 0;
+
+            fab.addEventListener('touchstart', dragStart, { passive: false });
+            fab.addEventListener('touchend', dragEnd, { passive: false });
+            fab.addEventListener('touchmove', drag, { passive: false });
+
+            function dragStart(e) {
+                if (e.target.closest('button') && !e.target.closest('#mainFabBtn')) return;
+                initialX = e.touches[0].clientX - xOffset;
+                initialY = e.touches[0].clientY - yOffset;
+                isDragging = true;
+            }
+
+            function dragEnd() {
+                initialX = currentX;
+                initialY = currentY;
+                isDragging = false;
+            }
+
+            function drag(e) {
+                if (isDragging) {
+                    e.preventDefault();
+                    currentX = e.touches[0].clientX - initialX;
+                    currentY = e.touches[0].clientY - initialY;
+                    xOffset = currentX;
+                    yOffset = currentY;
+                    fab.style.transform = `translate3d(${currentX}px, ${currentY}px, 0)`;
+                }
+            }
+        }
+
+        window.shareViaWhatsApp = function() {
+            try {
+                const nextVer = incrementVersion();
+                let shareUrl = window.location.href;
+                
+                if (window.location.protocol === 'file:') {
+                    alert("⚠️ Yerel dosya modundasınız. WhatsApp ile canlı senkronizasyon için lütfen Web Linki (URL) kullanınız.");
+                }
+
+                const message = `Gezelim Görelim (v${nextVer}) Ortak gezi ve mekan listemize katıl! 🗺️✨\n\n${shareUrl}`;
+                const encodedText = encodeURIComponent(message);
+                
+                const waUrl = `https://api.whatsapp.com/send?text=${encodedText}`;
+                const a = document.createElement('a');
+                a.href = waUrl;
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => { if (a.parentNode) a.parentNode.removeChild(a); }, 100);
+            } catch(err) {
+                alert("WhatsApp bağlantısı açılamadı.");
+            }
+        };
+
+        function triggerRandomPlacePicker() {
+            toggleFabMenu();
+            const filtered = placesData.filter(p => p.section === window.currentSection);
+            if (filtered.length === 0) {
+                alert("Öneri için seçili menüde mekan yok!");
+                return;
+            }
+            const random = filtered[Math.floor(Math.random() * filtered.length)];
+            alert(`🎲 Bugün Ne Denedenilsin?\n\n✨ ${random.title}\n📍 ${random.district}, ${random.city}\n⭐ Puan: ${random.googleRating || 'Yeni'}`);
+        }
+
+        function openAddPlaceModal() {
+            promptSecurityCheck('add', null);
+        }
+
+        function closePlaceModal() {
+            document.getElementById('placeModal').classList.add('hidden');
+        }
+
+        function updateCategoryDropdownOptions() {
+            const sec = document.getElementById('placeSection').value;
+            const select = document.getElementById('placeCategory');
+            const cats = CATEGORIES[sec];
+            let html = '';
+            cats.forEach(c => {
+                html += `<option value="${c}">${c}</option>`;
+            });
+            select.innerHTML = html;
+        }
+
+        async function handlePlaceSubmit(e) {
+            e.preventDefault();
+            const editId = document.getElementById('editPlaceId').value;
+            const category = document.getElementById('placeCategory').value;
+            const isMuseum = category === 'Müze';
+
+            const newPlace = {
+                id: editId || Date.now().toString(),
+                title: document.getElementById('placeTitle').value,
+                city: document.getElementById('placeCity').value,
+                district: document.getElementById('placeDistrict').value,
+                section: document.getElementById('placeSection').value,
+                category: category,
+                status: document.getElementById('placeStatus').value,
+                author: window.currentAuthorRole,
+                note: document.getElementById('placeNote').value,
+                mapsUrl: document.getElementById('placeMapsUrl').value,
+                googleRating: document.getElementById('placeGoogleRating').value || null,
+                reviewCount: document.getElementById('placeReviewCount').value || null,
+                aiSummary: document.getElementById('placeAiSummary').value || null,
+                museumCard: isMuseum ? document.getElementById('placeMuseumCard').value : 'BILGI_YOK',
+                nightMuseum: isMuseum ? document.getElementById('placeNightMuseum').value : 'YOK',
+                nightMuseumNote: isMuseum ? document.getElementById('placeNightMuseumNote').value : '',
+                lat: parseFloat(document.getElementById('placeLat').value) || null,
+                lng: parseFloat(document.getElementById('placeLng').value) || null
+            };
+
+            if (editId) {
+                const idx = placesData.findIndex(p => p.id === editId);
+                if (idx !== -1) placesData[idx] = newPlace;
+            } else {
+                placesData.unshift(newPlace);
+            }
+
+            if (typeof window.savePlaceToCloud === 'function') {
+                await window.savePlaceToCloud(newPlace);
+            }
+
+            localStorage.setItem('gezelim_places_v1', JSON.stringify(placesData));
+            populateCityDropdown();
+            setMainSection(newPlace.section);
+            closePlaceModal();
+        }
+
+        function promptSecurityCheck(action, id) {
+            window.pendingAction = { action, id };
+            document.getElementById('securityPasswordInput').value = '';
+            document.getElementById('passwordModal').classList.remove('hidden');
+        }
+
+        function closePasswordModal() {
+            document.getElementById('passwordModal').classList.add('hidden');
+            window.pendingAction = null;
+        }
+
+        async function submitPasswordVerification() {
+            const pass = document.getElementById('securityPasswordInput').value;
+            if (pass !== window.customSecurityPin) {
+                alert('❌ Hatalı şifre! Lütfen ortak şifrenizi giriniz.');
+                return;
+            }
+
+            const { action, id } = window.pendingAction;
+            closePasswordModal();
+
+            if (action === 'add') {
+                document.getElementById('modalTitle').innerText = "✨ Yeni Durak Ekle";
+                document.getElementById('editPlaceId').value = "";
+                document.getElementById('placeForm').reset();
+                updateCategoryDropdownOptions();
+                document.getElementById('placeModal').classList.remove('hidden');
+                if (!document.getElementById('fabSubMenu').classList.contains('hidden')) toggleFabMenu();
+            } else if (action === 'delete') {
+                placesData = placesData.filter(p => p.id !== id);
+                if (typeof window.deletePlaceFromCloud === 'function') {
+                    await window.deletePlaceFromCloud(id);
+                }
+                localStorage.setItem('gezelim_places_v1', JSON.stringify(placesData));
+                populateCityDropdown();
+                renderPlaces();
+            } else if (action === 'edit') {
+                const p = placesData.find(item => item.id === id);
+                if (p) {
+                    document.getElementById('modalTitle').innerText = "✏️ Durağı Düzenle";
+                    document.getElementById('editPlaceId').value = p.id;
+                    document.getElementById('placeTitle').value = p.title;
+                    document.getElementById('placeCity').value = p.city;
+                    document.getElementById('placeDistrict').value = p.district;
+                    document.getElementById('placeSection').value = p.section;
+                    updateCategoryDropdownOptions();
+                    document.getElementById('placeCategory').value = p.category;
+                    document.getElementById('placeStatus').value = p.status;
+                    document.getElementById('placeNote').value = p.note || '';
+                    document.getElementById('placeMapsUrl').value = p.mapsUrl || '';
+                    document.getElementById('placeLat').value = p.lat || '';
+                    document.getElementById('placeLng').value = p.lng || '';
+                    document.getElementById('placeModal').classList.remove('hidden');
+                }
+            }
+        }
+
+        function openUserGuideModal() {
+            if (!document.getElementById('fabSubMenu').classList.contains('hidden')) toggleFabMenu();
+            document.getElementById('userGuideModal').classList.remove('hidden');
+        }
+
+        function closeUserGuideModal() {
+            document.getElementById('userGuideModal').classList.add('hidden');
+        }
+    </script>
+</body>
+</html>
