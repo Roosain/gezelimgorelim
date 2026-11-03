@@ -2,9 +2,8 @@ name: Supabase Keep Alive
 
 on:
   schedule:
-    # Her 3 günde bir gece 00:00'da otomatik çalışır (7 günlük limite takılmayı engeller)
     - cron: '0 0 */3 * *'
-  workflow_dispatch: # GitHub arayüzünden istediğiniz zaman elle çalıştırabilmenizi sağlar
+  workflow_dispatch:
 
 jobs:
   ping-supabase:
@@ -12,16 +11,19 @@ jobs:
     steps:
       - name: Ping Supabase REST API
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/" \
+          # URL sonundaki olası fazla slash ve ekleri otomatik temizler
+          CLEAN_URL=$(echo "${{ secrets.SUPABASE_URL }}" | sed 's|/rest/v1/*$||' | sed 's|/*$||')
+          
+          response=$(curl -s -o /dev/null -w "%{http_code}" -X GET "$CLEAN_URL/rest/v1/" \
             -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
           
-          echo "HTTP Durum Kodu: $response"
+          echo "Alınan HTTP Durum Kodu: $response"
           
           if [ "$response" -eq 200 ] || [ "$response" -eq 204 ]; then
             echo "Supabase başarıyla pingle-ndi ve aktif tutuldu."
             exit 0
           else
-            echo "İstek başarısız oldu!"
+            echo "Hata! Beklenmeyen HTTP Kodu: $response"
             exit 1
           fi
